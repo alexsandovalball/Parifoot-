@@ -56,21 +56,33 @@ async def _get(url: str, params: dict, headers: dict | None = None) -> Any:
 _ODDS_BASE = "https://api.the-odds-api.com/v4"
 
 
-async def fetch_odds(sport: str, markets: str = "h2h,totals") -> list[dict]:
+async def fetch_odds(
+    sport: str,
+    markets: str = "h2h,totals,bttss",
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> list[dict]:
     """
     Fetch live odds for a sport from The Odds API.
 
     Returns a list of event dicts as returned by the API.
     Each event includes bookmaker odds for the requested markets.
+
+    date_from / date_to: ISO 8601 strings, e.g. "2026-03-19T00:00:00Z".
+    When provided, only events commencing in that window are returned.
     """
     url = f"{_ODDS_BASE}/sports/{sport}/odds"
-    params = {
+    params: dict = {
         "apiKey": config.ODDS_API_KEY,
         "regions": "eu,uk",       # European / UK bookmakers incl. Pinnacle
         "markets": markets,
         "oddsFormat": "decimal",
         "dateFormat": "iso",
     }
+    if date_from:
+        params["commenceTimeFrom"] = date_from
+    if date_to:
+        params["commenceTimeTo"] = date_to
     data = await _get(url, params)
     if not isinstance(data, list):
         logger.warning("Unexpected odds response for %s: %s", sport, type(data))
@@ -79,11 +91,27 @@ async def fetch_odds(sport: str, markets: str = "h2h,totals") -> list[dict]:
     return data
 
 
+async def fetch_odds_for_date(sport: str, target_date: date) -> list[dict]:
+    """Fetch odds for *sport* filtered to events on *target_date* (UTC)."""
+    date_from = f"{target_date.isoformat()}T00:00:00Z"
+    next_day = date.fromordinal(target_date.toordinal() + 1)
+    date_to = f"{next_day.isoformat()}T00:00:00Z"
+    return await fetch_odds(sport, date_from=date_from, date_to=date_to)
+
+
 async def fetch_all_target_odds() -> list[dict]:
     """
     Fetch odds for every target league concurrently and merge results.
+    Backward-compatible wrapper that uses today's date.
     """
-    tasks = [fetch_odds(sport) for sport in config.TARGET_LEAGUES_ODDS_API]
+    return await fetch_all_target_odds_for_date(date.today())
+
+
+async def fetch_all_target_odds_for_date(target_date: date) -> list[dict]:
+    """
+    Fetch odds for every target league concurrently for *target_date* and merge results.
+    """
+    tasks = [fetch_odds_for_date(sport, target_date) for sport in config.TARGET_LEAGUES_ODDS_API]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     events: list[dict] = []
     for sport, result in zip(config.TARGET_LEAGUES_ODDS_API, results):
@@ -119,11 +147,47 @@ def extract_best_odds(event: dict, market_key: str, outcome_name: str) -> tuple[
 
 def extract_double_chance_odds(event: dict, dc_type: str) -> tuple[float, str]:
     """
-    Extract Double Chance odds (1X or X2) from bookmakers.
+    Compute Double Chance odds (1X or X2) from h2h bookmaker prices.
+
+    The Odds API h2h market only has home/away/Draw outcomes – there is no
+    literal "1X" or "X2" outcome name.  We derive them from the no-vig
+    combination of the underlying h2h prices:
+        1X  = 1 / (1/home + 1/draw)
+        X2  = 1 / (1/draw + 1/away)
+
+    Returns (best_dc_odds, bookmaker_title).
+    """
+    return compute_double_chance_odds(event, dc_type)
+
+
+def compute_double_chance_odds(event: dict, dc_type: str) -> tuple[float, str]:
+    """
+    Derive Double Chance odds from h2h home/draw/away prices.
 
     dc_type: '1X' or 'X2'
+    Returns (best_decimal_odds, bookmaker_title).
     """
-    return extract_best_odds(event, "h2h", dc_type)
+    home_team = event.get("home_team", "")
+    away_team = event.get("away_team", "")
+    best = 0.0
+    best_book = ""
+    for bm in event.get("bookmakers", []):
+        for mkt in bm.get("markets", []):
+            if mkt["key"] != "h2h":
+                continue
+            prices = {o["name"].lower(): o["price"] for o in mkt.get("outcomes", [])}
+            home_p = prices.get(home_team.lower(), 0.0)
+            draw_p = prices.get("draw", 0.0)
+            away_p = prices.get(away_team.lower(), 0.0)
+            if dc_type == "1X" and home_p > 0 and draw_p > 0:
+                dc = 1.0 / (1.0 / home_p + 1.0 / draw_p)
+                if dc > best:
+                    best, best_book = dc, bm["title"]
+            elif dc_type == "X2" and draw_p > 0 and away_p > 0:
+                dc = 1.0 / (1.0 / draw_p + 1.0 / away_p)
+                if dc > best:
+                    best, best_book = dc, bm["title"]
+    return round(best, 4), best_book
 
 
 # ===========================================================================
@@ -139,32 +203,52 @@ def _apifb_headers() -> dict:
 async def fetch_fixtures_today(league_id: int, season: int | None = None) -> list[dict]:
     """
     Return today's fixtures for a given API-Football league id.
+    Backward-compatible wrapper around fetch_fixtures_for_date.
+    """
+    return await fetch_fixtures_for_date(league_id, date.today(), season)
+
+
+async def fetch_fixtures_for_date(
+    league_id: int,
+    target_date: date,
+    season: int | None = None,
+) -> list[dict]:
+    """
+    Return fixtures for *target_date* for a given API-Football league id.
     """
     if season is None:
         season = _current_season()
-    today_str = date.today().isoformat()
+    date_str = target_date.isoformat()
     data = await _get(
         f"{_APIFB_BASE}/fixtures",
         params={
             "league": league_id,
             "season": season,
-            "date": today_str,
+            "date": date_str,
             "timezone": "UTC",
         },
         headers=_apifb_headers(),
     )
     fixtures = data.get("response", []) if isinstance(data, dict) else []
-    logger.info("Fetched %d fixtures for league_id=%s date=%s", len(fixtures), league_id, today_str)
+    logger.info("Fetched %d fixtures for league_id=%s date=%s", len(fixtures), league_id, date_str)
     return fixtures
 
 
 async def fetch_all_fixtures_today() -> list[dict]:
     """
     Fetch today's fixtures for every target league concurrently.
+    Backward-compatible wrapper around fetch_all_fixtures_for_date.
+    """
+    return await fetch_all_fixtures_for_date(date.today())
+
+
+async def fetch_all_fixtures_for_date(target_date: date) -> list[dict]:
+    """
+    Fetch fixtures for *target_date* for every target league concurrently.
     """
     season = _current_season()
     tasks = [
-        fetch_fixtures_today(league_id, season)
+        fetch_fixtures_for_date(league_id, target_date, season)
         for league_id in config.TARGET_LEAGUES_API_FOOTBALL.values()
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
