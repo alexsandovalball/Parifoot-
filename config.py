@@ -51,6 +51,10 @@ BOOSTER_LEGS_COUNT: int = int(os.getenv("BOOSTER_LEGS_COUNT", "1"))
 # e.g., team must score in at least this fraction of recent matches
 MIN_SCORING_RATE: float = float(os.getenv("MIN_SCORING_RATE", "0.50"))
 
+# Minimum EV edge required to include a booster leg (ratio: soft_odds / pinnacle_odds - 1)
+# Set to 0.0 to include any booster with positive or neutral EV; increase to be more selective.
+BOOSTER_MIN_EV_EDGE: float = float(os.getenv("BOOSTER_MIN_EV_EDGE", "0.05"))
+
 # Flat daily stake in USD used for ROI calculation
 DAILY_STAKE_USD: float = float(os.getenv("DAILY_STAKE_USD", "10.0"))
 
