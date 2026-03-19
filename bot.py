@@ -80,16 +80,17 @@ def _format_ticket(ticket: dict, day_label: str | None = None) -> str:
         idx += 1
     lines.append("")
 
-    # Booster leg(s)
-    lines.append("🚀 <b>Booster Leg(s) (Value Pick):</b>")
-    for leg in boosters:
-        emoji = _NUMBER_EMOJIS[idx] if idx < len(_NUMBER_EMOJIS) else f"{idx + 1}."
-        lines.append(
-            f"{emoji} {_escape(leg['match_name'])} – "
-            f"{_escape(leg['market'])} @ <b>{leg['odds']:.2f}</b>"
-        )
-        idx += 1
-    lines.append("")
+    # Booster leg(s) – only rendered when a booster is actually present
+    if boosters:
+        lines.append("🚀 <b>Booster Leg(s) (Value Pick):</b>")
+        for leg in boosters:
+            emoji = _NUMBER_EMOJIS[idx] if idx < len(_NUMBER_EMOJIS) else f"{idx + 1}."
+            lines.append(
+                f"{emoji} {_escape(leg['match_name'])} – "
+                f"{_escape(leg['market'])} @ <b>{leg['odds']:.2f}</b>"
+            )
+            idx += 1
+        lines.append("")
 
     # Summary
     lines.append(f"📈 <b>Total Combined Odds:</b> {ticket['total_odds']:.2f}")
