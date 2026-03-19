@@ -206,9 +206,9 @@ async def get_booster_legs(
 
         # ------------------------------------------------------------------
         # Market 2 – Both Teams to Score (BTTS)
-        # bttss is The Odds API's dedicated BTTS market key.
+        # btts is The Odds API's dedicated BTTS market key.
         # ------------------------------------------------------------------
-        btts_odds, btts_book = api_client.extract_best_odds(event, "bttss", "Yes")
+        btts_odds, btts_book = api_client.extract_best_odds(event, "btts", "Yes")
 
         if config.BOOSTER_ODDS_MIN <= btts_odds <= config.BOOSTER_ODDS_MAX:
             # Verify BTTS H2H rate
@@ -243,19 +243,75 @@ def _build_ticket(
     total odds fall within [TARGET_ODDS_MIN, TARGET_ODDS_MAX].
 
     Strategy:
-    1. Fix one booster leg at a time (best EV first).
-    2. For each booster, iterate over combinations of 3–6 foundation legs
-       and check if combined odds land in the target window.
-    3. Return the first valid combination found.
+    1. If both candidate lists are empty, return None immediately.
+    2. If booster_candidates is empty, attempt a foundation-only ticket.
+    3. If foundation_candidates is empty, attempt a booster-only ticket.
+    4. Otherwise fix one booster leg at a time (best EV first) and iterate
+       over combinations of foundation legs until the odds window is hit.
+    5. On failure, fall through to _relaxed_build.
     """
+    if not foundation_candidates and not booster_candidates:
+        logger.warning("No candidates at all – cannot build ticket")
+        return None
+
     n_foundation_min = config.FOUNDATION_LEGS_MIN
     n_foundation_max = min(config.FOUNDATION_LEGS_MAX, len(foundation_candidates))
     n_boosters = config.BOOSTER_LEGS_COUNT
 
+    # ------------------------------------------------------------------
+    # Case A: no booster candidates – try foundation-only ticket
+    # ------------------------------------------------------------------
     if not booster_candidates:
-        logger.warning("No booster candidates – cannot build ticket")
-        return None
+        logger.info("No booster candidates – attempting foundation-only ticket")
+        for n in range(n_foundation_min, n_foundation_max + 1):
+            for combo in itertools.combinations(
+                foundation_candidates[: min(20, len(foundation_candidates))],
+                n,
+            ):
+                match_names = [leg["match_name"] for leg in combo]
+                if len(match_names) != len(set(match_names)):
+                    continue
+                total = math.prod(leg["odds"] for leg in combo)
+                if config.TARGET_ODDS_MIN <= total <= config.TARGET_ODDS_MAX:
+                    all_legs = list(combo)
+                    return {
+                        "legs": all_legs,
+                        "total_odds": round(total, 4),
+                        "bookmaker": _pick_best_bookmaker(all_legs),
+                        "date": target_date,
+                    }
+        logger.info("Foundation-only exact window not found – trying relaxed search")
+        return _relaxed_build(foundation_candidates, booster_candidates, target_date)
 
+    # ------------------------------------------------------------------
+    # Case B: no foundation candidates – try booster-only ticket
+    # ------------------------------------------------------------------
+    if not foundation_candidates:
+        logger.info("No foundation candidates – attempting booster-only ticket")
+        eligible_boosters = [b for b in booster_candidates if b["odds"] < config.TARGET_ODDS_MAX]
+        for n in range(1, min(n_boosters + 3, len(eligible_boosters) + 1)):
+            for combo in itertools.combinations(
+                eligible_boosters[: min(10, len(eligible_boosters))],
+                n,
+            ):
+                match_names = [leg["match_name"] for leg in combo]
+                if len(match_names) != len(set(match_names)):
+                    continue
+                total = math.prod(leg["odds"] for leg in combo)
+                if config.TARGET_ODDS_MIN <= total <= config.TARGET_ODDS_MAX:
+                    all_legs = list(combo)
+                    return {
+                        "legs": all_legs,
+                        "total_odds": round(total, 4),
+                        "bookmaker": _pick_best_bookmaker(all_legs),
+                        "date": target_date,
+                    }
+        logger.info("Booster-only exact window not found – trying relaxed search")
+        return _relaxed_build(foundation_candidates, booster_candidates, target_date)
+
+    # ------------------------------------------------------------------
+    # Case C: combined foundation + booster logic
+    # ------------------------------------------------------------------
     # Pre-filter: a single booster leg that already exceeds TARGET_ODDS_MAX
     # can never be part of a valid ticket with any foundation legs.
     eligible_boosters = [
@@ -263,7 +319,7 @@ def _build_ticket(
     ]
     if not eligible_boosters:
         logger.warning("All booster candidates exceed TARGET_ODDS_MAX")
-        return None
+        return _relaxed_build(foundation_candidates, booster_candidates, target_date)
 
     for booster_combo in itertools.combinations(
         eligible_boosters[: min(10, len(eligible_boosters))],
@@ -313,6 +369,12 @@ def _relaxed_build(
     """
     Last-resort: find the combination whose total odds are closest to
     TARGET_ODDS_MIN from above (up to 25x ceiling).
+
+    Handles three cases gracefully:
+    - Both lists present: combined search (existing behaviour).
+    - foundation_candidates empty: booster-only combinations.
+    - booster_candidates empty: foundation-only combinations (the booster
+      combo loop degenerates to a single empty tuple with product 1.0).
     """
     RELAXED_MAX = 25.0
     best_ticket = None
@@ -323,6 +385,36 @@ def _relaxed_build(
 
     eligible_boosters = [b for b in booster_candidates if b["odds"] < RELAXED_MAX]
 
+    # ------------------------------------------------------------------
+    # Special case: no foundation candidates – try booster-only combos
+    # ------------------------------------------------------------------
+    if not foundation_candidates and eligible_boosters:
+        for n in range(1, min(n_boosters + 3, len(eligible_boosters) + 1)):
+            for combo in itertools.combinations(
+                eligible_boosters[: min(6, len(eligible_boosters))],
+                n,
+            ):
+                match_names = [leg["match_name"] for leg in combo]
+                if len(match_names) != len(set(match_names)):
+                    continue
+                total = math.prod(leg["odds"] for leg in combo)
+                if config.TARGET_ODDS_MIN <= total <= RELAXED_MAX:
+                    if total < best_odds:
+                        best_odds = total
+                        all_legs = list(combo)
+                        best_ticket = {
+                            "legs": all_legs,
+                            "total_odds": round(total, 4),
+                            "bookmaker": _pick_best_bookmaker(all_legs),
+                            "date": target_date,
+                        }
+        return best_ticket
+
+    # ------------------------------------------------------------------
+    # Normal path: combined logic.
+    # When booster_candidates is empty, combinations([], 0) yields one
+    # empty tuple so the inner foundation loops run with booster_product=1.
+    # ------------------------------------------------------------------
     for booster_combo in itertools.combinations(
         eligible_boosters[: min(6, len(eligible_boosters))],
         min(n_boosters, len(eligible_boosters)),

@@ -58,7 +58,7 @@ _ODDS_BASE = "https://api.the-odds-api.com/v4"
 
 async def fetch_odds(
     sport: str,
-    markets: str = "h2h,totals,bttss",
+    markets: str = "h2h,totals,btts",
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> list[dict]:
