@@ -31,11 +31,11 @@ API_FOOTBALL_KEY: str = os.environ["API_FOOTBALL_KEY"]
 # Algorithm parameters
 # ---------------------------------------------------------------------------
 # Target total combined odds window
-TARGET_ODDS_MIN: float = float(os.getenv("TARGET_ODDS_MIN", "8.0"))
+TARGET_ODDS_MIN: float = float(os.getenv("TARGET_ODDS_MIN", "6.0"))
 TARGET_ODDS_MAX: float = float(os.getenv("TARGET_ODDS_MAX", "20.0"))
 
 # Foundation legs – odds range per leg
-FOUNDATION_ODDS_MIN: float = float(os.getenv("FOUNDATION_ODDS_MIN", "1.10"))
+FOUNDATION_ODDS_MIN: float = float(os.getenv("FOUNDATION_ODDS_MIN", "1.05"))
 FOUNDATION_ODDS_MAX: float = float(os.getenv("FOUNDATION_ODDS_MAX", "1.70"))
 
 # Booster legs – odds range per leg
@@ -43,7 +43,7 @@ BOOSTER_ODDS_MIN: float = float(os.getenv("BOOSTER_ODDS_MIN", "1.50"))
 BOOSTER_ODDS_MAX: float = float(os.getenv("BOOSTER_ODDS_MAX", "4.00"))
 
 # How many foundation and booster legs to aim for
-FOUNDATION_LEGS_MIN: int = int(os.getenv("FOUNDATION_LEGS_MIN", "3"))
+FOUNDATION_LEGS_MIN: int = int(os.getenv("FOUNDATION_LEGS_MIN", "2"))
 FOUNDATION_LEGS_MAX: int = int(os.getenv("FOUNDATION_LEGS_MAX", "6"))
 BOOSTER_LEGS_COUNT: int = int(os.getenv("BOOSTER_LEGS_COUNT", "1"))
 
