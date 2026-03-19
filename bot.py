@@ -9,12 +9,12 @@ Commands
                 Mark yesterday's ticket result in the database.
 /stats          Display all-time tracking statistics.
 
-The JobQueue fires the daily ticket automatically at 09:00 UTC.
+The JobQueue fires the ticket generation automatically every hour.
 """
 
 import logging
 import os
-from datetime import date, time as dt_time, timezone
+from datetime import date
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -258,16 +258,13 @@ def create_application() -> Application:
     app.add_handler(CommandHandler("track", cmd_track))
     app.add_handler(CommandHandler("stats", cmd_stats))
 
-    # Schedule daily ticket
+    # Schedule repeating ticket generation (every TICKET_INTERVAL_SECONDS)
     job_queue: JobQueue = app.job_queue
-    job_queue.run_daily(
+    job_queue.run_repeating(
         _daily_ticket_job,
-        time=dt_time(
-            hour=config.DAILY_SEND_HOUR,
-            minute=config.DAILY_SEND_MINUTE,
-            tzinfo=timezone.utc,
-        ),
-        name="daily_ticket",
+        interval=config.TICKET_INTERVAL_SECONDS,
+        first=0,
+        name="ticket_interval",
     )
 
     return app
