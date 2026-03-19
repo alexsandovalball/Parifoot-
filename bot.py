@@ -276,8 +276,23 @@ def create_application() -> Application:
 def main() -> None:
     database.init_db()
     app = create_application()
-    logger.info("Parifoot bot starting – polling for updates…")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    render_url = os.getenv("RENDER_EXTERNAL_URL")
+    port = int(os.getenv("PORT", "8080"))
+
+    if render_url:
+        webhook_url = f"{render_url}/webhook"
+        logger.info("Parifoot bot starting – webhook mode at %s", webhook_url)
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path="webhook",
+            webhook_url=webhook_url,
+            allowed_updates=Update.ALL_TYPES,
+        )
+    else:
+        logger.info("Parifoot bot starting – polling for updates…")
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
