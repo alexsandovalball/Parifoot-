@@ -3,18 +3,18 @@ algorithm.py – Core accumulator-building logic.
 
 Strategy (Safe Aggregation)
 ---------------------------
-Foundation legs  (4–6):  odds 1.15–1.50 each, statistically backed by
+Foundation legs  (3–6):  odds 1.10–1.70 each, statistically backed by
                           API-Football team stats / H2H.
-Booster leg(s)   (1–2):  odds 2.00–3.00 each, positive EV cross-checked
+Booster leg(s)   (1–2):  odds 1.50–4.00 each, positive EV cross-checked
                           against Pinnacle-style sharp bookmakers.
-Target total             10.0–12.0 combined odds.
+Target total             8.0–20.0 combined odds.
 """
 
 import asyncio
 import itertools
 import logging
 import math
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 import api_client
@@ -35,7 +35,7 @@ Leg = dict  # keys: match_name, market, odds, leg_type, league, bookmaker
 
 async def build_10x_accumulator() -> Optional[dict]:
     """
-    Fetch live data and attempt to construct a 10x accumulator ticket.
+    Fetch live data and attempt to construct a 10x accumulator ticket for today.
 
     Returns a dict with keys:
         legs         list[Leg]
@@ -44,13 +44,22 @@ async def build_10x_accumulator() -> Optional[dict]:
         date         date
     or None if no valid ticket could be constructed.
     """
-    logger.info("Starting accumulator build for %s", date.today())
+    return await build_accumulator_for_date(date.today())
+
+
+async def build_accumulator_for_date(target_date: date) -> Optional[dict]:
+    """
+    Build an accumulator ticket for *target_date*.
+
+    Returns a ticket dict or None if no valid ticket could be constructed.
+    """
+    logger.info("Starting accumulator build for %s", target_date)
 
     # Fetch data concurrently
-    odds_events, fixtures = await _fetch_data()
+    odds_events, fixtures = await _fetch_data(target_date)
 
     if not odds_events and not fixtures:
-        logger.error("No data available from APIs – cannot build ticket")
+        logger.error("No data available from APIs for %s – cannot build ticket", target_date)
         return None
 
     # Build candidate legs
@@ -58,15 +67,37 @@ async def build_10x_accumulator() -> Optional[dict]:
     booster_candidates = await get_booster_legs(odds_events, fixtures)
 
     logger.info(
-        "Candidates – foundation: %d, booster: %d",
+        "Candidates for %s – foundation: %d, booster: %d",
+        target_date,
         len(foundation_candidates),
         len(booster_candidates),
     )
 
-    ticket = _build_ticket(foundation_candidates, booster_candidates)
+    ticket = _build_ticket(foundation_candidates, booster_candidates, target_date)
     if ticket is None:
-        logger.warning("Could not construct a ticket within target odds window")
+        logger.warning("Could not construct a ticket within target odds window for %s", target_date)
     return ticket
+
+
+async def build_3day_tickets() -> list[dict]:
+    """
+    Build accumulator tickets for today and the next LOOKAHEAD_DAYS-1 days.
+
+    Returns a list of non-None ticket dicts (up to LOOKAHEAD_DAYS entries).
+    Each ticket dict includes a 'date' key with the target date.
+    """
+    today = date.today()
+    tickets: list[dict] = []
+    for offset in range(config.LOOKAHEAD_DAYS):
+        target_date = today + timedelta(days=offset)
+        try:
+            ticket = await build_accumulator_for_date(target_date)
+        except Exception:
+            logger.exception("Error building ticket for %s", target_date)
+            ticket = None
+        if ticket is not None:
+            tickets.append(ticket)
+    return tickets
 
 
 async def get_foundation_legs(
@@ -115,7 +146,7 @@ async def get_foundation_legs(
         # ------------------------------------------------------------------
         # Market 2 – Double Chance 1X (home or draw)
         # ------------------------------------------------------------------
-        dc1x_odds, dc1x_book = api_client.extract_best_odds(event, "h2h", "1X")
+        dc1x_odds, dc1x_book = api_client.compute_double_chance_odds(event, "1X")
         if config.FOUNDATION_ODDS_MIN <= dc1x_odds <= config.FOUNDATION_ODDS_MAX:
             candidates.append(
                 _make_leg(home, away, "Double Chance 1X", dc1x_odds, league, dc1x_book, "foundation")
@@ -124,7 +155,7 @@ async def get_foundation_legs(
         # ------------------------------------------------------------------
         # Market 3 – Double Chance X2 (draw or away)
         # ------------------------------------------------------------------
-        dcx2_odds, dcx2_book = api_client.extract_best_odds(event, "h2h", "X2")
+        dcx2_odds, dcx2_book = api_client.compute_double_chance_odds(event, "X2")
         if config.FOUNDATION_ODDS_MIN <= dcx2_odds <= config.FOUNDATION_ODDS_MAX:
             candidates.append(
                 _make_leg(home, away, "Double Chance X2", dcx2_odds, league, dcx2_book, "foundation")
@@ -175,10 +206,9 @@ async def get_booster_legs(
 
         # ------------------------------------------------------------------
         # Market 2 – Both Teams to Score (BTTS)
+        # bttss is The Odds API's dedicated BTTS market key.
         # ------------------------------------------------------------------
-        btts_odds, btts_book = api_client.extract_best_odds(event, "h2h", "Both teams to score - Yes")
-        if not btts_odds:
-            btts_odds, btts_book = api_client.extract_best_odds(event, "h2h", "Yes")
+        btts_odds, btts_book = api_client.extract_best_odds(event, "bttss", "Yes")
 
         if config.BOOSTER_ODDS_MIN <= btts_odds <= config.BOOSTER_ODDS_MAX:
             # Verify BTTS H2H rate
@@ -206,6 +236,7 @@ async def get_booster_legs(
 def _build_ticket(
     foundation_candidates: list[Leg],
     booster_candidates: list[Leg],
+    target_date: date,
 ) -> Optional[dict]:
     """
     Try combinations of foundation + booster legs to find a ticket whose
@@ -213,7 +244,7 @@ def _build_ticket(
 
     Strategy:
     1. Fix one booster leg at a time (best EV first).
-    2. For each booster, iterate over combinations of 4–6 foundation legs
+    2. For each booster, iterate over combinations of 3–6 foundation legs
        and check if combined odds land in the target window.
     3. Return the first valid combination found.
     """
@@ -266,23 +297,24 @@ def _build_ticket(
                         "legs": all_legs,
                         "total_odds": round(total_odds, 4),
                         "bookmaker": best_bookmaker,
-                        "date": date.today(),
+                        "date": target_date,
                     }
 
-    # No exact window found – attempt a relaxed search (up to 15x)
+    # No exact window found – attempt a relaxed search (up to 25x)
     logger.info("Exact window not found – trying relaxed search")
-    return _relaxed_build(foundation_candidates, booster_candidates)
+    return _relaxed_build(foundation_candidates, booster_candidates, target_date)
 
 
 def _relaxed_build(
     foundation_candidates: list[Leg],
     booster_candidates: list[Leg],
+    target_date: date,
 ) -> Optional[dict]:
     """
     Last-resort: find the combination whose total odds are closest to
-    TARGET_ODDS_MIN from above (up to 15x ceiling).
+    TARGET_ODDS_MIN from above (up to 25x ceiling).
     """
-    RELAXED_MAX = 15.0
+    RELAXED_MAX = 25.0
     best_ticket = None
     best_odds = float("inf")
 
@@ -313,7 +345,7 @@ def _relaxed_build(
                             "legs": all_legs,
                             "total_odds": round(total, 4),
                             "bookmaker": _pick_best_bookmaker(all_legs),
-                            "date": date.today(),
+                            "date": target_date,
                         }
 
     return best_ticket
@@ -323,9 +355,9 @@ def _relaxed_build(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-async def _fetch_data() -> tuple[list[dict], list[dict]]:
-    odds_task = api_client.fetch_all_target_odds()
-    fix_task = api_client.fetch_all_fixtures_today()
+async def _fetch_data(target_date: date) -> tuple[list[dict], list[dict]]:
+    odds_task = api_client.fetch_all_target_odds_for_date(target_date)
+    fix_task = api_client.fetch_all_fixtures_for_date(target_date)
     odds_events, fixtures = await asyncio.gather(odds_task, fix_task, return_exceptions=True)
     if isinstance(odds_events, Exception):
         logger.error("Odds API error: %s", odds_events)

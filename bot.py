@@ -5,6 +5,7 @@ Commands
 --------
 /start          Welcome message and strategy overview.
 /today          Generate and display today's 10x accumulator ticket.
+/upcoming       Generate and display tickets for the next 3 days.
 /track <win|loss>
                 Mark yesterday's ticket result in the database.
 /stats          Display all-time tracking statistics.
@@ -14,7 +15,7 @@ The JobQueue fires the daily ticket automatically at 09:00 UTC.
 
 import logging
 import os
-from datetime import date, time as dt_time, timezone
+from datetime import date, time as dt_time, timedelta, timezone
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -43,13 +44,26 @@ logger = logging.getLogger(__name__)
 _NUMBER_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣"]
 
 
-def _format_ticket(ticket: dict) -> str:
+def _day_label(ticket_date: date) -> str:
+    """Return a human-readable day label relative to today."""
+    today = date.today()
+    delta = (ticket_date - today).days
+    if delta == 0:
+        return "Today"
+    if delta == 1:
+        return "Tomorrow"
+    return ticket_date.strftime("%A, %d %b")
+
+
+def _format_ticket(ticket: dict, day_label: str | None = None) -> str:
     """Render a ticket dict as a Telegram HTML-formatted message."""
     legs = ticket["legs"]
     foundation = [l for l in legs if l["leg_type"] == "foundation"]
     boosters = [l for l in legs if l["leg_type"] == "booster"]
 
     lines: list[str] = []
+    if day_label:
+        lines.append(f"📅 <b>{_escape(day_label)}</b>")
     lines.append("⚽ <b>Daily 10x Aggregation Ticket</b> ⚽")
     lines.append(f"📅 <b>Date:</b> {ticket['date']}")
     lines.append("")
@@ -107,6 +121,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Expected Value pushes the total past 10.0.\n\n"
         "<b>Commands:</b>\n"
         "• /today – Generate today's ticket\n"
+        "• /upcoming – Tickets for the next 3 days\n"
         "• /track win|loss – Record yesterday's result\n"
         "• /stats – All-time hit rate &amp; ROI\n\n"
         "⚠️ <i>For educational purposes. Gamble responsibly.</i>"
@@ -149,6 +164,43 @@ async def cmd_today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         _format_ticket(ticket),
         parse_mode=ParseMode.HTML,
     )
+
+
+async def cmd_upcoming(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(
+        "🔄 <i>Fetching upcoming tickets for the next 3 days… this may take a moment.</i>",
+        parse_mode=ParseMode.HTML,
+    )
+    try:
+        tickets = await algorithm.build_3day_tickets()
+    except Exception:
+        logger.exception("Error building upcoming tickets")
+        await update.message.reply_text(
+            "❌ <b>Failed to generate upcoming tickets.</b> Please try again later.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if not tickets:
+        await update.message.reply_text(
+            "😔 <b>No valid tickets found for the next 3 days.</b>\n"
+            "Try again later when more fixtures are available.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    for ticket in tickets:
+        label = _day_label(ticket["date"])
+        database.save_ticket(
+            ticket_date=ticket["date"],
+            total_odds=ticket["total_odds"],
+            bookmaker=ticket["bookmaker"],
+            legs=ticket["legs"],
+        )
+        await update.message.reply_text(
+            _format_ticket(ticket, day_label=label),
+            parse_mode=ParseMode.HTML,
+        )
 
 
 async def cmd_track(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -208,10 +260,10 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ---------------------------------------------------------------------------
 
 async def _daily_ticket_job(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Scheduled job: generate and push today's ticket to the owner chat."""
+    """Scheduled job: generate and push upcoming tickets to the owner chat."""
     logger.info("Running daily scheduled ticket generation")
     try:
-        ticket = await algorithm.build_10x_accumulator()
+        tickets = await algorithm.build_3day_tickets()
     except Exception:
         logger.exception("Scheduled job error")
         await context.bot.send_message(
@@ -221,29 +273,30 @@ async def _daily_ticket_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
 
-    if ticket is None:
+    if not tickets:
         await context.bot.send_message(
             chat_id=config.TELEGRAM_CHAT_ID,
             text=(
-                "😔 <b>Daily Ticket – No valid ticket today.</b>\n"
-                "No qualifying fixtures found. Try /today later."
+                "😔 <b>Daily Ticket – No valid tickets for the next 3 days.</b>\n"
+                "No qualifying fixtures found. Try /today or /upcoming later."
             ),
             parse_mode=ParseMode.HTML,
         )
         return
 
-    database.save_ticket(
-        ticket_date=ticket["date"],
-        total_odds=ticket["total_odds"],
-        bookmaker=ticket["bookmaker"],
-        legs=ticket["legs"],
-    )
-
-    await context.bot.send_message(
-        chat_id=config.TELEGRAM_CHAT_ID,
-        text=_format_ticket(ticket),
-        parse_mode=ParseMode.HTML,
-    )
+    for ticket in tickets:
+        label = _day_label(ticket["date"])
+        database.save_ticket(
+            ticket_date=ticket["date"],
+            total_odds=ticket["total_odds"],
+            bookmaker=ticket["bookmaker"],
+            legs=ticket["legs"],
+        )
+        await context.bot.send_message(
+            chat_id=config.TELEGRAM_CHAT_ID,
+            text=_format_ticket(ticket, day_label=label),
+            parse_mode=ParseMode.HTML,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +314,7 @@ def create_application() -> Application:
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("today", cmd_today))
+    app.add_handler(CommandHandler("upcoming", cmd_upcoming))
     app.add_handler(CommandHandler("track", cmd_track))
     app.add_handler(CommandHandler("stats", cmd_stats))
 
