@@ -75,9 +75,12 @@ TARGET_LEAGUES_API_FOOTBALL: dict[str, int] = {
 # ---------------------------------------------------------------------------
 # Scheduling
 # ---------------------------------------------------------------------------
-# Daily ticket generation time (24-h format, UTC)
+# Daily ticket generation time (24-h format, UTC) – kept for backwards compatibility
 DAILY_SEND_HOUR: int = int(os.getenv("DAILY_SEND_HOUR", "9"))
 DAILY_SEND_MINUTE: int = int(os.getenv("DAILY_SEND_MINUTE", "0"))
+
+# Interval between automatic ticket generations in seconds (default: 1 hour)
+TICKET_INTERVAL_SECONDS: int = int(os.getenv("TICKET_INTERVAL_SECONDS", "3600"))
 
 # ---------------------------------------------------------------------------
 # Database
